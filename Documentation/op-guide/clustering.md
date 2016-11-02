@@ -207,34 +207,45 @@ exit 1
 
 In a number of cases, the IPs of the cluster peers may not be known ahead of time. This is common when utilizing cloud providers or when the network uses DHCP. In these cases, rather than specifying a static configuration, use an existing etcd cluster to bootstrap a new one. This process is called "discovery".
 
-There two methods that can be used for discovery:
+There are two methods that can be used for discovery:
 
 * etcd discovery service
 * DNS SRV records
 
 ### etcd discovery
 
-To better understand the design of the discovery service protocol, we suggest reading the discovery service protocol [documentation][discovery-proto].
+To better understand the design of the discovery service protocol, we suggest reading the [discovery service protocol][discovery-proto] and the [cluster discovery][cluster-discovery] documentation.
 
 #### Lifetime of a discovery URL
 
-A discovery URL identifies a unique etcd cluster. Instead of reusing an existing discovery URL, a new cluster must create new discovery URLs.
+A discovery URL can be used to quickly bootstrap a new cluster. A discovery URL identifies a unique etcd cluster. To automatically create a cluster, several etcd instances can each be configured with identical configurations, including the discovery URL, in order to bootstrap the new cluster. A new cluster should always use a new discovery URL, not reuse an existing discovery URL from another cluster.
 
-Moreover, discovery URLs should ONLY be used for the initial bootstrapping of a cluster. To change cluster membership after the cluster is already running, see the [runtime reconfiguration][runtime-conf] guide.
+To generate a new discovery URL, make a request to the discovery service, then add this new discovery URL to each etcd instances `cloud-config` file:
+
+```
+$ curl -w "\n" 'https://discovery.etcd.io/new?size=3'
+```
+
+Discovery URLs should ONLY be used for the initial bootstrapping of a cluster. To change cluster membership after the cluster is already running, see the [runtime reconfiguration][runtime-conf] guide.
 
 #### Custom etcd discovery service
 
-Discovery uses an existing cluster to bootstrap itself. If using a private etcd cluster, you can create a URL like so:
+Discovery uses an existing cluster to bootstrap itself. When using a private etcd cluster whose etcd instances cannot access the public discovery service at 
+'https://discovery.etcd.io/new', a private discovery URL can be created from an existing local cluster via an API call to an etcd instance in the cluster. 
+
+Each member needs to agree on the discovery URL of the private cluster. The discovery URL ends with a unique UUID. You can generate a UUID using the standard UNIX `uuidgen` tool, and then use this UUID to generate a discovery URL for a particular cluster size: 
+
 
 ```
-$ curl -X PUT https://myetcd.local/v2/keys/discovery/6c007a14875d53d9bf0ef5a6fc0257c817f0fb83/_config/size -d value=3
+export UUID=${uuidgen}
+$ curl -X PUT https://myetcd.local/v2/keys/discovery/${UUID}/_config/size -d value=3
 ```
 
 By setting the size key to the URL, a discovery URL is created with an expected cluster size of 3.
 
-The URL to use in this case will be `https://myetcd.local/v2/keys/discovery/6c007a14875d53d9bf0ef5a6fc0257c817f0fb83` and the etcd members will use the `https://myetcd.local/v2/keys/discovery/6c007a14875d53d9bf0ef5a6fc0257c817f0fb83` directory for registration as they start.
+The URL to use in this case will be `https://myetcd.local/v2/keys/discovery/${UUID}` and the etcd members will use the `https://myetcd.local/v2/keys/discovery/${UUID}` directory for registration as they start.
 
-**Each member must have a different name flag specified. `Hostname` or `machine-id` can be a good choice. Or discovery will fail due to duplicated name.**
+**Each member must have a different name flag specified. `Hostname` or `machine-id` can be a good choice. Otherwise discovery will fail due to duplicated name.**
 
 Now we start etcd with those relevant flags for each member:
 
@@ -243,21 +254,21 @@ $ etcd --name infra0 --initial-advertise-peer-urls http://10.0.1.10:2380 \
   --listen-peer-urls http://10.0.1.10:2380 \
   --listen-client-urls http://10.0.1.10:2379,http://127.0.0.1:2379 \
   --advertise-client-urls http://10.0.1.10:2379 \
-  --discovery https://myetcd.local/v2/keys/discovery/6c007a14875d53d9bf0ef5a6fc0257c817f0fb83
+  --discovery https://myetcd.local/v2/keys/discovery/${UUID}
 ```
 ```
 $ etcd --name infra1 --initial-advertise-peer-urls http://10.0.1.11:2380 \
   --listen-peer-urls http://10.0.1.11:2380 \
   --listen-client-urls http://10.0.1.11:2379,http://127.0.0.1:2379 \
   --advertise-client-urls http://10.0.1.11:2379 \
-  --discovery https://myetcd.local/v2/keys/discovery/6c007a14875d53d9bf0ef5a6fc0257c817f0fb83
+  --discovery https://myetcd.local/v2/keys/discovery/${UUID}
 ```
 ```
 $ etcd --name infra2 --initial-advertise-peer-urls http://10.0.1.12:2380 \
   --listen-peer-urls http://10.0.1.12:2380 \
   --listen-client-urls http://10.0.1.12:2379,http://127.0.0.1:2379 \
   --advertise-client-urls http://10.0.1.12:2379 \
-  --discovery https://myetcd.local/v2/keys/discovery/6c007a14875d53d9bf0ef5a6fc0257c817f0fb83
+  --discovery https://myetcd.local/v2/keys/discovery/${UUID}
 ```
 
 This will cause each member to register itself with the custom etcd discovery service and begin the cluster once all machines have been registered.
@@ -271,7 +282,7 @@ $ curl https://discovery.etcd.io/new?size=3
 https://discovery.etcd.io/3e86b59982e49066c5d813af1c2e2579cbf573de
 ```
 
-This will create the cluster with an initial (default) size of 3 members. If no size is specified, a default of 3 is used.
+This will create the cluster with an initial size of 3 members. If no size is specified, a default of 3 is used.
 
 ```
 ETCD_DISCOVERY=https://discovery.etcd.io/3e86b59982e49066c5d813af1c2e2579cbf573de
@@ -466,9 +477,11 @@ When the `--proxy` flag is set, etcd runs in [proxy mode][proxy]. This proxy mod
 
 To setup an etcd cluster with proxies of v2 API, please read the the [clustering doc in etcd 2.3 release][clustering_etcd2].
 
+[cluster-discovery]: cluster-discovery.md
 [conf-adv-client]: configuration.md#--advertise-client-urls
 [conf-listen-client]: configuration.md#--listen-client-urls
 [discovery-proto]: ../dev-internal/discovery_protocol.md
+
 [rfc-srv]: http://www.ietf.org/rfc/rfc2052.txt
 [runtime-conf]: runtime-configuration.md
 [runtime-reconf-design]: runtime-reconf-design.md
